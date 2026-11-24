@@ -1,0 +1,12 @@
+# 필수
+anthropic>=1.0.0        # 채팅 문장 생성 (httpx2 를 함께 설치함)
+websockets>=13.0        # 치지직 채팅 WebSocket
+PyYAML>=6.0             # config.yaml
+
+# 음성인식. config.yaml 의 stt.backend 가 "faster-whisper" 일 때 필요하다.
+# (stt.backend: dummy 로 두면 없어도 돌아간다)
+#
+# ⚠️ 설치 용량이 크고(수백 MB) GPU 유무에 따라 설정이 달라서 일부러 주석으로
+#    두었다. 쓰려면 아래 줄의 # 을 지우거나 직접 설치:
+#        pip install faster-whisper
+# faster-whisper>=1.0.0

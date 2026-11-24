@@ -1,0 +1,95 @@
+# =================================================================
+#  config.example.yaml  ->  config.yaml 로 복사해서 수정하세요.
+#  비밀값(API 키, 네이버 쿠키)은 여기가 아니라 .env 에 넣습니다.
+# =================================================================
+
+channel:
+  # 치지직 채널 ID. 방송 주소가
+  #   https://chzzk.naver.com/live/abc123...
+  # 이면 'abc123...' 부분(32자리)이 채널 ID 입니다.
+  id: "여기에_채널ID"
+
+bot:
+  # true 면 채팅을 실제로 보내지 않고 로그에만 찍습니다.
+  # 처음에는 반드시 true 로 한참 돌려보고, 말투가 마음에 들면 false 로 바꾸세요.
+  dry_run: true
+
+audio:
+  # false 로 하면 음성인식을 끄고 채팅만 읽습니다(테스트용).
+  enabled: true
+  ffmpeg_path: "ffmpeg"
+  # 방송 화질. audio_only 가 가능하면 제일 가볍습니다.
+  prefer_audio_only: true
+  vad:
+    # 말소리로 볼 최소 음량(RMS, 0~1). 마이크가 작으면 낮추세요.
+    silence_threshold: 0.012
+    # 이보다 짧은 소리는 버립니다(기침, 클릭음).
+    min_speech_sec: 0.7
+    # 말이 길어도 이 길이에서 한 번 끊습니다.
+    max_segment_sec: 12.0
+    # 이만큼 조용하면 "한 문장 끝"으로 보고 STT 에 넘깁니다.
+    trailing_silence_sec: 0.45
+
+stt:
+  # faster-whisper | dummy
+  #   dummy = 음성인식 없이 파이프라인만 테스트
+  backend: "faster-whisper"
+  # tiny / base / small / medium / large-v3
+  #   CPU 만 있으면 small 까지가 현실적입니다.
+  model: "small"
+  device: "auto"          # auto | cpu | cuda
+  compute_type: "auto"    # auto | int8 | float16
+  language: "ko"
+  beam_size: 1
+
+llm:
+  # 기본값은 Claude Opus 5.5 입니다.
+  # 더 싸고 빠르게 돌리고 싶으면 "claude-haiku-5-5" 로 바꾸세요
+  # (채팅 한 줄 생성에는 보통 충분합니다).
+  model: "claude-opus-5-5"
+  effort: "low"           # low | medium | high  (낮을수록 빠르고 쌉니다)
+  max_tokens: 400
+
+director:
+  # 채팅을 "언제" 칠지 정하는 규칙. 도배를 막는 핵심 설정입니다.
+  min_interval_sec: 45          # 최소 이 간격은 쉽니다
+  max_per_10min: 8              # 10분에 최대 몇 개
+  lull_sec: 25                  # 이만큼 아무 말 없으면 분위기 띄우기 시도
+  min_new_chars: 25             # 새로 들린 말이 이만큼 쌓여야 반응
+  startup_grace_sec: 20         # 켜고 나서 이만큼은 듣기만 함
+  attempt_interval_sec: 10      # Claude 에게 물어보는 최소 간격(안 보내도 적용)
+  # 사람들이 이미 활발히 채팅 중이면 봇은 물러납니다.
+  human_chat_backoff:
+    window_sec: 60
+    messages: 8                 # 1분에 8개 넘게 올라오면
+    interval_multiplier: 2.5    # 최소 간격을 2.5배로 늘림
+
+persona:
+  name: "따숨"
+  # 봇의 성격. 자유롭게 바꾸세요.
+  description: |
+    스트리머를 오래 봐온 단골 시청자.
+    조용하지만 다정하고, 리액션이 과하지 않다.
+    반응은 짧고 담백하게. 억지 밈이나 유행어를 남발하지 않는다.
+  interests:
+    - "게임 실력 칭찬"
+    - "스트리머 컨디션 챙기기"
+    - "방송 내용에 대한 짧은 맞장구"
+  avoid:
+    - "정치, 종교, 성적인 얘기"
+    - "다른 스트리머 언급"
+    - "훈수, 지적, 가르치려는 말투"
+    - "돈 얘기, 후원 유도"
+
+safety:
+  max_chars: 90           # 치지직 채팅 길이 제한보다 넉넉히 짧게
+  dedupe_window: 12       # 최근 12개와 비슷하면 안 보냄
+  # 중복 판정 기준(0~1). 기본값은 꽤 깐깐해서 비슷한 말이면 그냥 안 보냅니다.
+  # "할 말을 너무 자주 삼킨다" 싶으면 0.9 정도로 올리세요.
+  similarity_limit: 0.82
+  blocked_words: []
+
+log:
+  level: "INFO"
+  # 들린 말 / 보낸 채팅을 파일로 남깁니다. 비우면 안 남김.
+  file: "logs/bot.log"
