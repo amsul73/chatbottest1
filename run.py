@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """치지직 방송을 듣고 채팅을 쳐주는 봇.
 
-  python run.py              # 실행
-  python run.py --check      # 자체 점검 (처음에 이걸 먼저)
-  python run.py --dry-run    # 채팅을 보내지 않고 로그만
+  python run.py --check               # 자체 점검 (처음에 이걸 먼저)
+  python run.py --rehearse clip.mp4   # 녹음 파일로 연습 (방송 꺼져 있어도 됨)
+  python run.py --dry-run             # 생방송에 붙되 채팅은 안 보냄
+  python run.py --send                # 실제로 채팅을 보냄
 """
 
 from __future__ import annotations
@@ -41,6 +42,13 @@ def parse_args() -> argparse.Namespace:
         help="--check 에서 Claude 실제 호출을 건너뛴다",
     )
     parser.add_argument(
+        "--rehearse",
+        metavar="오디오파일",
+        help="리허설: 치지직에 접속하지 않고 녹음 파일로 전체 파이프라인을 "
+        "돌려본다. 방송이 꺼져 있어도 된다. (wav/mp3/mp4/m4a 등 ffmpeg 가 "
+        "읽을 수 있는 것, URL 도 가능)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="채팅을 실제로 보내지 않고 로그에만 남긴다 (설정값보다 우선)",
@@ -64,6 +72,18 @@ async def amain(args: argparse.Namespace) -> int:
     if args.dry_run and args.send:
         print("--dry-run 과 --send 를 같이 쓸 수 없습니다", file=sys.stderr)
         return 2
+    if args.rehearse:
+        if args.send:
+            print("--rehearse 는 채팅을 보내지 않습니다 (--send 와 함께 쓸 수 없음)",
+                  file=sys.stderr)
+            return 2
+        path = Path(args.rehearse)
+        if not path.is_file() and not args.rehearse.startswith(("http://", "https://")):
+            print(f"오디오 파일을 찾을 수 없습니다: {args.rehearse}", file=sys.stderr)
+            return 2
+        cfg.bot.offline = True
+        cfg.audio.enabled = True
+        cfg.audio.source_file = args.rehearse
     if args.dry_run:
         cfg.bot.dry_run = True
     if args.send:

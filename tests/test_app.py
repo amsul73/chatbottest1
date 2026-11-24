@@ -243,3 +243,95 @@ class TestAudioToTranscript:
         heard = app._transcript.recent(600)
         assert len(heard) >= 2, f"들린 말이 모자람: {[u.text for u in heard]}"
         assert all(u.text for u in heard)
+
+
+@pytest.mark.asyncio
+class TestRehearsal:
+    """--rehearse: 방송이 꺼져 있어도 녹음 파일로 전체 파이프라인이 돌아간다."""
+
+    def _wav(self, tmp_path, make_tone, make_silence):
+        import wave
+
+        path = tmp_path / "clip.wav"
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(
+                make_silence(0.2)
+                + make_tone(1.3)
+                + make_silence(0.8)
+                + make_tone(1.5)
+                + make_silence(0.8)
+                + make_tone(1.2)
+                + make_silence(0.8)
+            )
+        return path
+
+    async def test_runs_without_chzzk_and_reports_what_it_would_say(
+        self, tmp_path, make_tone, make_silence
+    ):
+        import asyncio
+
+        app = make_app(draft=Draft(True, "오 그거 좋네요", "리허설"))
+        app.cfg.bot.offline = True
+        app.cfg.audio.enabled = True
+        app.cfg.audio.source_file = str(self._wav(tmp_path, make_tone, make_silence))
+
+        # 치지직에 접속하면 안 된다 — 접속을 시도하면 테스트가 실패하게 둔다
+        async def must_not_be_called(*_a, **_kw):
+            raise AssertionError("리허설 모드에서 치지직에 접속하려 했다")
+
+        app._chat.start = must_not_be_called  # type: ignore[assignment]
+        app._api.live_audio_url = must_not_be_called  # type: ignore[assignment]
+        app._api.user_id_hash = must_not_be_called  # type: ignore[assignment]
+
+        await asyncio.wait_for(app.run(), timeout=60)
+
+        # 파일이 끝나면 스스로 종료한다
+        assert app._stopping.is_set()
+        # 들은 말이 있고, 보냈을 메시지가 있다
+        assert len(app._transcript.recent(600)) >= 2
+        assert app._sent_count >= 1
+        # 리허설은 절대 실제로 보내지 않는다
+        assert app._chat.sent == []
+        assert app.cfg.bot.dry_run is True
+
+    async def test_refuses_without_audio_file(self):
+        app = make_app()
+        app.cfg.bot.offline = True
+        app.cfg.audio.enabled = True
+        app.cfg.audio.source_file = None
+        await app.run()  # 에러 로그만 남기고 조용히 끝난다
+        assert app._sent_count == 0
+
+    async def test_forces_dry_run_even_if_config_says_send(
+        self, tmp_path, make_tone, make_silence
+    ):
+        import asyncio
+
+        app = make_app(dry_run=False, draft=Draft(True, "보내면 안 되는 말", ""))
+        app.cfg.bot.offline = True
+        app.cfg.audio.enabled = True
+        app.cfg.audio.source_file = str(self._wav(tmp_path, make_tone, make_silence))
+        app._chat.start = lambda *a, **k: None  # type: ignore[assignment]
+
+        await asyncio.wait_for(app.run(), timeout=60)
+        assert app.cfg.bot.dry_run is True
+        assert app._chat.sent == []
+
+
+@pytest.mark.asyncio
+async def test_dropped_segments_do_not_block_queue_join():
+    """밀려서 버린 구간도 task_done 처리되어야 join() 이 끝난다."""
+    import asyncio
+
+    from chatbot.audio.vad import Segment
+
+    app = make_app()
+    for i in range(10):
+        app._enqueue(Segment(b"\x00\x00" * 16000, 16000))
+    while not app._segments.empty():
+        app._segments.get_nowait()
+        app._segments.task_done()
+    await asyncio.wait_for(app._segments.join(), timeout=5)

@@ -27,6 +27,9 @@ class ChannelConfig:
 @dataclass
 class BotConfig:
     dry_run: bool = True
+    # 리허설 모드: 치지직에 접속하지 않고 녹음 파일만으로 돌려본다.
+    # (방송이 꺼져 있어도 전체 파이프라인을 볼 수 있다)
+    offline: bool = False
 
 
 @dataclass
@@ -41,6 +44,8 @@ class VadConfig:
 class AudioConfig:
     enabled: bool = True
     ffmpeg_path: str = "ffmpeg"
+    # 값이 있으면 생방송 대신 이 파일/URL 에서 오디오를 읽는다(리허설용).
+    source_file: str | None = None
     prefer_audio_only: bool = True
     sample_rate: int = 16000
     vad: VadConfig = field(default_factory=VadConfig)

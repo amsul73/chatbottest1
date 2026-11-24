@@ -66,14 +66,34 @@ class ChatBotApp:
         self._sent_count = 0
 
     # ------------------------------------------------------------------
+    @property
+    def _offline(self) -> bool:
+        """리허설 모드: 치지직에 접속하지 않고 녹음 파일로만 돌린다."""
+        return self.cfg.bot.offline
+
     async def run(self) -> None:
         cfg = self.cfg
+
+        if cfg.bot.offline:
+            # 리허설은 보내지 않는다. 실수로 보내는 일이 없게 여기서 못박는다.
+            cfg.bot.dry_run = True
+            if not cfg.audio.source_file:
+                log.error("리허설 모드에는 오디오 파일이 필요합니다 (--rehearse <파일>)")
+                return
+            if not cfg.audio.enabled:
+                log.error("리허설 모드에서는 audio.enabled 가 true 여야 합니다")
+                return
+
         log.info("=" * 56)
-        log.info("채널: %s", cfg.channel.id)
-        log.info(
-            "모드: %s",
-            "DRY-RUN (채팅 안 보냄, 로그만)" if cfg.bot.dry_run else "실제 전송",
-        )
+        if cfg.bot.offline:
+            log.info("모드: 리허설 (치지직 접속 안 함, 채팅 안 보냄)")
+            log.info("오디오: %s", cfg.audio.source_file)
+        else:
+            log.info("채널: %s", cfg.channel.id)
+            log.info(
+                "모드: %s",
+                "DRY-RUN (채팅 안 보냄, 로그만)" if cfg.bot.dry_run else "실제 전송",
+            )
         log.info("캐릭터: %s", cfg.persona.name)
         log.info("음성인식: %s", cfg.stt.backend if cfg.audio.enabled else "꺼짐")
         log.info("모델: %s (effort=%s)", cfg.llm.model, cfg.llm.effort)
@@ -101,10 +121,9 @@ class ChatBotApp:
             log.error("ANTHROPIC_API_KEY 가 없습니다. .env 를 확인해주세요.")
             return
 
-        tasks = [
-            asyncio.create_task(self._chat.start(), name="chat-start"),
-            asyncio.create_task(self._decide_loop(), name="decide"),
-        ]
+        tasks = [asyncio.create_task(self._decide_loop(), name="decide")]
+        if not self._offline:
+            tasks.append(asyncio.create_task(self._chat.start(), name="chat-start"))
         if cfg.audio.enabled:
             tasks.append(asyncio.create_task(self._audio_loop(), name="audio"))
             tasks.append(asyncio.create_task(self._stt_loop(), name="stt"))
@@ -143,21 +162,29 @@ class ChatBotApp:
 
     # ------------------------------------------------------------------ 오디오
     async def _audio_loop(self) -> None:
+        source_file = self.cfg.audio.source_file
         while not self._stopping.is_set():
-            try:
-                url = await self._api.live_audio_url(
-                    self.cfg.channel.id, self.cfg.audio.prefer_audio_only
-                )
-            except NotLiveError:
-                log.debug("방송 꺼짐 — 오디오 대기")
-                await self._sleep(AUDIO_RETRY_INTERVAL)
-                continue
-            except ChzzkError as exc:
-                log.warning("오디오 주소를 받지 못했습니다: %s", exc)
-                await self._sleep(AUDIO_RETRY_INTERVAL)
-                continue
+            if source_file:
+                url = source_file
+                log.info("오디오 파일 재생: %s", source_file)
+                # 녹음 파일에는 '방금 접속했다'는 개념이 없으므로 시작 유예를
+                # 두지 않는다. 그래야 짧은 클립에서도 반응을 볼 수 있다.
+                self.cfg.director.startup_grace_sec = 0.0
+            else:
+                try:
+                    url = await self._api.live_audio_url(
+                        self.cfg.channel.id, self.cfg.audio.prefer_audio_only
+                    )
+                except NotLiveError:
+                    log.debug("방송 꺼짐 — 오디오 대기")
+                    await self._sleep(AUDIO_RETRY_INTERVAL)
+                    continue
+                except ChzzkError as exc:
+                    log.warning("오디오 주소를 받지 못했습니다: %s", exc)
+                    await self._sleep(AUDIO_RETRY_INTERVAL)
+                    continue
+                log.info("오디오 수신 시작")
 
-            log.info("오디오 수신 시작")
             self._director.reset_clock()
             vad = self.cfg.audio.vad
             segmenter = SpeechSegmenter(
@@ -178,7 +205,32 @@ class ChatBotApp:
             for segment in segmenter.flush():
                 self._enqueue(segment)
 
+            if self._offline:
+                await self._finish_rehearsal()
+                return
+
             await self._sleep(5.0)
+
+    async def _finish_rehearsal(self) -> None:
+        """파일이 끝나면 남은 음성인식을 비우고 마지막 판단까지 해본 뒤 끝낸다."""
+        log.info("오디오 파일이 끝났습니다. 남은 음성인식을 처리합니다…")
+        try:
+            await asyncio.wait_for(self._segments.join(), timeout=180)
+        except asyncio.TimeoutError:
+            log.warning("음성인식이 끝나지 않아 기다리기를 멈춥니다")
+
+        # 쌓인 발화에 대해 마지막으로 몇 번 더 판단해본다
+        for _ in range(3):
+            if self._stopping.is_set():
+                break
+            try:
+                await self._tick()
+            except Exception:  # noqa: BLE001
+                log.exception("리허설 마지막 판단 중 오류")
+            await self._sleep(2.0)
+
+        log.info("리허설 종료")
+        self.stop()
 
     def _enqueue(self, segment: Segment) -> None:
         """음성인식 대기열에 넣는다. 꽉 찼으면 가장 오래된 걸 버린다."""
@@ -187,6 +239,9 @@ class ChatBotApp:
         except asyncio.QueueFull:
             with contextlib.suppress(asyncio.QueueEmpty):
                 dropped = self._segments.get_nowait()
+                # 버린 것도 task_done 을 해줘야 한다. 안 하면 Queue 의 미처리
+                # 카운터가 남아서 join() 이 영원히 끝나지 않는다.
+                self._segments.task_done()
                 log.debug("음성인식이 밀려 %.1f초 구간을 버림", dropped.duration_sec)
             with contextlib.suppress(asyncio.QueueFull):
                 self._segments.put_nowait(segment)
@@ -218,7 +273,7 @@ class ChatBotApp:
                 log.exception("판단 루프 오류")
 
     async def _tick(self) -> None:
-        if not self._chat.connected:
+        if not self._offline and not self._chat.connected:
             return
 
         decision = self._director.decide(self._transcript, self._activity)
